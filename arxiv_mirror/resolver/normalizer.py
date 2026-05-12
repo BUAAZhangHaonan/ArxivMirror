@@ -123,28 +123,36 @@ async def resolve(
             base_id = normalize_arxiv_id(parsed.arxiv_id)
 
             paper = await get_paper(session, base_id)
-            if paper is None:
-                return ResolveResponse(
-                    state=ResolverState.NOT_FOUND,
-                )
+            if paper is not None:
+                # Full metadata available from DB
+                if parsed.version is not None:
+                    ver = await get_latest_version(session, base_id)
+                    if ver is not None and parsed.version <= ver.version:
+                        from ..db.crud import get_version
+                        ver = await get_version(session, base_id, parsed.version)
+                else:
+                    ver = await get_latest_version(session, base_id)
 
-            # Determine version: explicit from input, or latest from DB
-            if parsed.version is not None:
-                ver = await get_latest_version(session, base_id)
-                # If the requested version exceeds what we have, still use latest
-                if ver is not None and parsed.version <= ver.version:
-                    from ..db.crud import get_version
-                    ver = await get_version(session, base_id, parsed.version)
-            else:
-                ver = await get_latest_version(session, base_id)
+                if ver is not None:
+                    resolved_versioned_id = make_versioned_id(paper.id, ver.version)
+                    return ResolveResponse(
+                        state=ResolverState.RESOLVED,
+                        result=_build_resolved_paper(paper, ver),
+                    )
 
-            if ver is None:
-                return ResolveResponse(state=ResolverState.NOT_FOUND)
-
-            resolved_versioned_id = make_versioned_id(paper.id, ver.version)
+            # No DB metadata, but the arXiv ID is valid — resolve without metadata.
+            # Default to version 1 if not specified.
+            version = parsed.version or 1
+            vid = make_versioned_id(base_id, version)
+            resolved_versioned_id = vid
             return ResolveResponse(
                 state=ResolverState.RESOLVED,
-                result=_build_resolved_paper(paper, ver),
+                result=ResolvedPaper(
+                    versioned_id=vid,
+                    arxiv_id=base_id,
+                    version=version,
+                    state=ResolverState.RESOLVED,
+                ),
             )
 
         # --- 2. Resolve by DOI ---------------------------------------------
