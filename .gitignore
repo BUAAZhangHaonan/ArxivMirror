@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.venv/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Project data
+data/
+pdfs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Lock files (optional - uncomment if you want to exclude)
+# uv.lock
