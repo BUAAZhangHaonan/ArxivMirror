@@ -18,7 +18,7 @@ from ..db.crud import (
     update_batch_job,
     update_batch_item,
 )
-from ..db.engine import get_session
+from ..db.engine import get_session, get_session_factory
 from ..models.enums import ResolverState
 from ..models.schemas import (
     BatchDownloadRequest,
@@ -39,12 +39,13 @@ _DEFAULT_CONCURRENCY = 16
 
 async def _resolve_with_semaphore(
     sem: asyncio.Semaphore,
-    session: AsyncSession,
     parsed,
 ) -> ResolveResponse:
-    """Resolve a single paper while respecting a concurrency semaphore."""
+    """Resolve a single paper with its own session, respecting concurrency semaphore."""
     async with sem:
-        return await resolve_paper(session, parsed)
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            return await resolve_paper(session, parsed)
 
 
 def _dedup_key_from_parsed(parsed) -> str | None:
@@ -89,7 +90,7 @@ async def batch_resolve(
 
     # Resolve each unique input concurrently with bounded concurrency.
     sem = asyncio.Semaphore(_DEFAULT_CONCURRENCY)
-    tasks = [_resolve_with_semaphore(sem, session, p) for p in unique_parsed]
+    tasks = [_resolve_with_semaphore(sem, p) for p in unique_parsed]
     unique_results: list[ResolveResponse] = list(await asyncio.gather(*tasks))
 
     # Map back to original order.
@@ -111,7 +112,7 @@ async def batch_download(
 
     # Phase 2: Resolve all parsed inputs concurrently with bounded concurrency.
     sem = asyncio.Semaphore(max_concurrent)
-    resolve_tasks = [_resolve_with_semaphore(sem, session, p) for p in all_parsed]
+    resolve_tasks = [_resolve_with_semaphore(sem, p) for p in all_parsed]
     all_resolve_resps: list[ResolveResponse] = list(await asyncio.gather(*resolve_tasks))
 
     # Phase 3: Deduplicate by versioned_id and count correctly.
