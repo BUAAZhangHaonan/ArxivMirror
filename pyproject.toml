@@ -21,6 +21,7 @@ dependencies = [
     "aiofiles>=24.1.0",
     "lxml>=5.3.0",
     "orjson>=3.10.0",
+    "aiobotocore>=2.15.0",
 ]
 
 [project.optional-dependencies]

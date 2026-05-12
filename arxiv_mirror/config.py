@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     pdf_max_file_size: int = 100 * 1024 * 1024
 
     s3_mirror_enabled: bool = False
+    s3_bucket: str = "arxiv"
+    s3_region: str = "us-east-1"
     s5cmd_path: str = "s5cmd"
 
     mineru_enabled: bool = False
