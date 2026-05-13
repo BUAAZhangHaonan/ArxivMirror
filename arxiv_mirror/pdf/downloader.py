@@ -40,14 +40,25 @@ class PdfDownloader:
         return self._session
 
     async def _enforce_rate_limit(self) -> None:
+        """Enforce global 3s gap between requests, sleeping *outside* the lock.
+
+        The lock is held only for the scheduling math (microseconds), so
+        multiple concurrent consumers can reserve their time slots without
+        blocking each other.
+        """
         settings = get_settings()
         delay = settings.arxiv_download_delay_seconds
+        wait_time = 0.0
         async with self._lock:
             now = time.monotonic()
-            elapsed = now - self._last_request_time
-            if elapsed < delay:
-                await asyncio.sleep(delay - elapsed)
-            self._last_request_time = time.monotonic()
+            next_slot = self._last_request_time + delay
+            if now < next_slot:
+                wait_time = next_slot - now
+                self._last_request_time = next_slot
+            else:
+                self._last_request_time = now
+        if wait_time > 0:
+            await asyncio.sleep(wait_time)
 
     async def download(self, versioned_id: str, dest_path: Path) -> DownloadResult:
         settings = get_settings()
