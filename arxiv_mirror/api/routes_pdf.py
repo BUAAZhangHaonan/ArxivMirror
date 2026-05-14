@@ -11,6 +11,7 @@ from ..db.crud import (
     create_pdf_asset,
     get_pdf_asset,
     get_parsed_text,
+    update_pdf_asset,
 )
 from ..db.engine import get_session
 from ..models.enums import DownloadStatus, ParseStatus, PdfSource, ResolverState
@@ -28,8 +29,16 @@ router = APIRouter(tags=["pdf"])
 
 
 def _build_pdf_asset_response(asset) -> PdfAssetResponse:
-    """Map a PdfAsset ORM object to the response schema."""
+    """Map a PdfAsset ORM object to the response schema.
+
+    The ``source`` column stores both lifecycle states (pending, downloading,
+    failed) and origin types (s3_mirror, remote, manual).  Only terminal
+    origin values are valid PdfSource enum members; transient states get
+    PdfSource.PENDING since the real source isn't known yet.
+    """
     source = asset.source
+
+    # Map source → download_status
     if source in ("pending", "downloading"):
         dl_status = DownloadStatus(source)
     elif source == "failed":
@@ -37,12 +46,18 @@ def _build_pdf_asset_response(asset) -> PdfAssetResponse:
     else:
         dl_status = DownloadStatus.COMPLETED
 
+    # Map source → PdfSource enum (only terminal origins are valid)
+    if source in ("pending", "downloading", "failed"):
+        pdf_source = PdfSource.PENDING
+    else:
+        pdf_source = PdfSource(source)
+
     return PdfAssetResponse(
         versioned_id=asset.versioned_id,
         local_path=asset.local_path,
         sha256=asset.sha256,
         file_size=asset.file_size,
-        source=PdfSource(source),
+        source=pdf_source,
         download_status=dl_status,
         mineru_status=ParseStatus(asset.mineru_status),
     )
@@ -54,7 +69,8 @@ async def _resolve_and_get_or_create_asset(
 ) -> tuple[ResolveResponse, PdfAssetResponse | None]:
     """Shared logic: parse + resolve + ensure pdf_asset exists.
 
-    Returns the resolve response and the pdf_asset response (if resolved).
+    If an existing asset is stuck in ``failed`` state, reset it to
+    ``pending`` so the download worker will retry.
     """
     parsed = parse_input(query)
     resolve_resp = await resolve_paper(session, parsed)
@@ -75,6 +91,10 @@ async def _resolve_and_get_or_create_asset(
             arxiv_id=arxiv_id,
             version=version,
         )
+    elif asset.source == "failed":
+        await update_pdf_asset(session, asset.id, source="pending")
+        await session.flush()
+        await session.refresh(asset)
 
     asset_resp = _build_pdf_asset_response(asset)
     return resolve_resp, asset_resp

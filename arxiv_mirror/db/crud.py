@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -174,10 +174,22 @@ async def get_pending_pdf_assets(
 async def claim_pdf_assets(
     session: AsyncSession, limit: int = 50
 ) -> list[PdfAsset]:
-    """Atomically claim pending PDF assets using SELECT FOR UPDATE SKIP LOCKED."""
+    """Atomically claim pending (and stale downloading) PDF assets.
+
+    Uses SELECT FOR UPDATE SKIP LOCKED.  Assets stuck in ``downloading`` for
+    more than 10 minutes are treated as orphaned from a crashed worker and
+    re-queued.
+    """
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+
     result = await session.execute(
         select(PdfAsset)
-        .where(PdfAsset.source == "pending")
+        .where(
+            or_(
+                PdfAsset.source == "pending",
+                (PdfAsset.source == "downloading") & (PdfAsset.updated_at < stale_cutoff),
+            )
+        )
         .order_by(PdfAsset.created_at)
         .limit(limit)
         .with_for_update(skip_locked=True)
