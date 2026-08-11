@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
-from xml.etree import ElementTree as ET
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 
 import httpx
 from lxml import etree
@@ -117,7 +117,9 @@ class OaiPmhClient:
         if status == "deleted":
             identifier_el = header_el.find(f"{{{OAI_NS}}}identifier")
             raw_id = (
-                identifier_el.text.strip() if identifier_el is not None and identifier_el.text else ""
+                identifier_el.text.strip()
+                if identifier_el is not None and identifier_el.text
+                else ""
             )
             return {
                 "id": _strip_oai_prefix(raw_id),
@@ -127,14 +129,18 @@ class OaiPmhClient:
         # Identifier
         identifier_el = header_el.find(f"{{{OAI_NS}}}identifier")
         raw_id = (
-            identifier_el.text.strip() if identifier_el is not None and identifier_el.text else ""
+            identifier_el.text.strip()
+            if identifier_el is not None and identifier_el.text
+            else ""
         )
         arxiv_id = _strip_oai_prefix(raw_id)
 
         # Datestamp
         datestamp_el = header_el.find(f"{{{OAI_NS}}}datestamp")
         datestamp_str = (
-            datestamp_el.text.strip() if datestamp_el is not None and datestamp_el.text else ""
+            datestamp_el.text.strip()
+            if datestamp_el is not None and datestamp_el.text
+            else ""
         )
         oai_datestamp = _parse_oai_datetime(datestamp_str)
 
@@ -163,7 +169,11 @@ class OaiPmhClient:
         journal_ref = _get_text(arxiv_el, f"{{{ARXIV_RAW_NS}}}journal-ref")
         license_str = _get_text(arxiv_el, f"{{{ARXIV_RAW_NS}}}license")
 
-        categories = [c.strip() for c in categories_str.split() if c.strip()] if categories_str else []
+        categories = (
+            [c.strip() for c in categories_str.split() if c.strip()]
+            if categories_str
+            else []
+        )
         primary_category = categories[0] if categories else None
 
         # Authors
@@ -241,7 +251,7 @@ def _strip_oai_prefix(identifier: str) -> str:
     """Strip 'oai:arXiv.org:' prefix from OAI identifier."""
     prefix = "oai:arXiv.org:"
     if identifier.startswith(prefix):
-        return identifier[len(prefix):]
+        return identifier[len(prefix) :]
     return identifier
 
 
@@ -249,12 +259,8 @@ def _parse_oai_datetime(s: str) -> datetime | None:
     """Parse OAI-PMH datestamp string to datetime."""
     if not s:
         return None
-    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d"):
-        try:
-            return datetime.fromisoformat(s.replace("Z", "+00:00")) if "T" in s else datetime.strptime(s, fmt)
-        except (ValueError, TypeError):
-            continue
-    return None
+    parsed = datetime.fromisoformat(s)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _get_text(el: etree._Element, tag: str) -> str | None:
@@ -295,20 +301,12 @@ def _parse_version(version_el: etree._Element) -> dict:
     date_str = _get_text(version_el, f"{{{ARXIV_RAW_NS}}}date")
     version_date = None
     if date_str:
-        # arXiv version dates are like "Tue, 1 Mar 2025 12:34:56 GMT"
-        # or simplified ISO format
-        for fmt in (
-            "%a, %d %b %Y %H:%M:%S %Z",
-            "%Y-%m-%d",
-            "%Y-%m-%dT%H:%M:%SZ",
-        ):
-            try:
-                version_date = datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
-                break
-            except (ValueError, TypeError):
-                continue
-        if version_date is None:
-            version_date = date_str
+        parsed_date = (
+            parsedate_to_datetime(date_str)
+            if "," in date_str
+            else datetime.fromisoformat(date_str)
+        )
+        version_date = parsed_date.date().isoformat()
 
     size = _get_text(version_el, f"{{{ARXIV_RAW_NS}}}size")
     file_type = _get_text(version_el, f"{{{ARXIV_RAW_NS}}}source_type")

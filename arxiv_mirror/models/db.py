@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     BigInteger,
@@ -11,9 +11,8 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    String,
     Text,
-    UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSON, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -44,18 +43,39 @@ class ArxivPaper(Base):
     source: Mapped[str] = mapped_column(Text, nullable=False, default="oaipmh")
     raw_metadata: Mapped[dict | None] = mapped_column(JSON)
     inserted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
     )
 
     versions: Mapped[list[PaperVersion]] = relationship(
         back_populates="paper", cascade="all, delete-orphan"
     )
     pdf_assets: Mapped[list[PdfAsset]] = relationship(
-        back_populates="paper", cascade="all, delete-orphan",
-        primaryjoin="ArxivPaper.id == foreign(PdfAsset.arxiv_id)",
+        back_populates="paper",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_papers_doi",
+            "doi",
+            unique=True,
+            postgresql_where=text("doi IS NOT NULL"),
+        ),
+        Index("idx_papers_normalized_title", "normalized_title"),
+        Index(
+            "idx_papers_title_trgm",
+            "title",
+            postgresql_using="gin",
+            postgresql_ops={"title": "gin_trgm_ops"},
+        ),
+        Index("idx_papers_categories", "categories", postgresql_using="gin"),
     )
 
 
@@ -82,75 +102,45 @@ class PdfAsset(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     versioned_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    arxiv_id: Mapped[str] = mapped_column(Text, nullable=False)
+    arxiv_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("arxiv_papers.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     source: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
     local_path: Mapped[str | None] = mapped_column(Text)
-    sha256: Mapped[str | None] = mapped_column(Text)
     file_size: Mapped[int | None] = mapped_column(BigInteger)
     fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    mineru_status: Mapped[str] = mapped_column(
-        Text, nullable=False, default="pending"
-    )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
-    )
-
-    paper: Mapped[ArxivPaper | None] = relationship(
-        back_populates="pdf_assets",
-        primaryjoin="foreign(PdfAsset.arxiv_id) == ArxivPaper.id",
-    )
-    parsed_text: Mapped[ParsedText | None] = relationship(
-        back_populates="pdf_asset", uselist=False, cascade="all, delete-orphan"
-    )
-
-
-class ParsedText(Base):
-    __tablename__ = "parsed_texts"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    pdf_asset_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("pdf_assets.id", ondelete="CASCADE"),
-        unique=True,
+        DateTime(timezone=True),
         nullable=False,
-    )
-    versioned_id: Mapped[str] = mapped_column(Text, nullable=False)
-    full_text: Mapped[str | None] = mapped_column(Text)
-    sections: Mapped[list | None] = mapped_column(JSON)
-    parse_status: Mapped[str] = mapped_column(
-        Text, nullable=False, default="pending"
-    )
-    error_message: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+        default=lambda: datetime.now(UTC),
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
     )
 
-    pdf_asset: Mapped[PdfAsset] = relationship(back_populates="parsed_text")
+    paper: Mapped[ArxivPaper | None] = relationship(back_populates="pdf_assets")
+
+    __table_args__ = (Index("idx_pdf_arxiv_id", "arxiv_id"),)
 
 
 class SyncState(Base):
     __tablename__ = "sync_state"
 
     name: Mapped[str] = mapped_column(Text, primary_key=True)
-    last_response_date: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
-    last_manifest_md5: Mapped[str | None] = mapped_column(Text)
+    last_response_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(Text, nullable=False, default="idle")
     records_harvested: Mapped[int | None] = mapped_column(BigInteger, default=0)
     error_message: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
     )
 
 
@@ -166,55 +156,7 @@ class ResolverAudit(Base):
     strategy: Mapped[str | None] = mapped_column(Text)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
-    )
-
-
-class BatchJob(Base):
-    __tablename__ = "batch_jobs"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
-    total_requested: Mapped[int] = mapped_column(Integer, default=0)
-    total_completed: Mapped[int] = mapped_column(Integer, default=0)
-    total_failed: Mapped[int] = mapped_column(Integer, default=0)
-    total_deduplicated: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
-    )
-
-    items: Mapped[list[BatchItem]] = relationship(
-        back_populates="batch", cascade="all, delete-orphan"
-    )
-
-
-class BatchItem(Base):
-    __tablename__ = "batch_items"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    batch_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("batch_jobs.id", ondelete="CASCADE"),
+        DateTime(timezone=True),
         nullable=False,
+        default=lambda: datetime.now(UTC),
     )
-    versioned_id: Mapped[str] = mapped_column(Text, nullable=False)
-    arxiv_id: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
-    pdf_asset_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("pdf_assets.id")
-    )
-    error_message: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
-    )
-
-    batch: Mapped[BatchJob] = relationship(back_populates="items")
-
-    __table_args__ = (UniqueConstraint("batch_id", "versioned_id"),)

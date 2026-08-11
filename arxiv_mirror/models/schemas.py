@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import uuid
-from datetime import date, datetime
+from datetime import date
 
 from pydantic import BaseModel, Field
 
-from .enums import DownloadStatus, ParseStatus, PdfSource, ResolverState
+from .enums import DownloadStatus, ResolverState
 
 
 class ParsedInput(BaseModel):
@@ -48,52 +47,11 @@ class BatchResolveRequest(BaseModel):
     queries: list[str]
 
 
-class BatchDownloadRequest(BaseModel):
-    queries: list[str]
-    max_concurrent: int = 5
-
-
-class BatchDownloadResponse(BaseModel):
-    batch_id: uuid.UUID
-    total_requested: int
-    total_deduplicated: int
-    status: str
-
-
-class BatchStatusResponse(BaseModel):
-    batch_id: uuid.UUID
-    status: str
-    total_requested: int
-    total_completed: int
-    total_failed: int
-    total_deduplicated: int
-    items: list[dict] = Field(default_factory=list)
-
-
 class PdfAssetResponse(BaseModel):
     versioned_id: str
     local_path: str | None = None
-    sha256: str | None = None
     file_size: int | None = None
-    source: PdfSource = PdfSource.PENDING
     download_status: DownloadStatus = DownloadStatus.PENDING
-    mineru_status: ParseStatus = ParseStatus.PENDING
-
-
-class ParsedTextResponse(BaseModel):
-    versioned_id: str
-    full_text: str | None = None
-    sections: list[dict] | None = None
-    parse_status: ParseStatus = ParseStatus.PENDING
-
-
-class JobStatusResponse(BaseModel):
-    job_id: uuid.UUID
-    status: str
-    total: int
-    completed: int
-    failed: int
-    items: list[dict] = Field(default_factory=list)
 
 
 class HealthResponse(BaseModel):

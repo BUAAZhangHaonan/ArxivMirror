@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 
 
 def run_api():
@@ -34,36 +33,5 @@ async def _run_harvest():
         await _harvest(engine)
     finally:
         from .db.engine import close_engine
-        await close_engine()
 
-
-def run_download_worker():
-    asyncio.run(_run_download_worker())
-
-
-async def _run_download_worker():
-    from .db.engine import get_engine
-    from .pdf.worker import run_worker as _worker
-
-    engine = get_engine()
-    try:
-        await _worker(engine)
-    finally:
-        from .db.engine import close_engine
-        await close_engine()
-
-
-def run_parser_worker():
-    asyncio.run(_run_parser_worker())
-
-
-async def _run_parser_worker():
-    from .db.engine import get_engine
-    from .parser.worker import run_worker as _worker
-
-    engine = get_engine()
-    try:
-        await _worker(engine)
-    finally:
-        from .db.engine import close_engine
         await close_engine()

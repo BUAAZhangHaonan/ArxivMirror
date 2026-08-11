@@ -44,6 +44,7 @@ _ARXIV_URL_RE = re.compile(
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _normalize_new_style(raw_id: str) -> str:
     """Normalize a new-style ID to canonical YYMM.NNNNN form.
 
@@ -71,6 +72,7 @@ def _normalize_old_style(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def parse_input(raw: str) -> ParsedInput:
     """Parse free-form user input into a structured ``ParsedInput``.
@@ -104,7 +106,12 @@ def parse_input(raw: str) -> ParsedInput:
         if os_match:
             return ParsedInput(
                 raw_input=text,
-                arxiv_id=_normalize_old_style(os_match.group(1), os_match.group(2), os_match.group(3), os_match.group(4)),
+                arxiv_id=_normalize_old_style(
+                    os_match.group(1),
+                    os_match.group(2),
+                    os_match.group(3),
+                    os_match.group(4),
+                ),
                 version=int(os_match.group(5)) if os_match.group(5) else None,
                 input_type="url",
             )
@@ -146,7 +153,12 @@ def parse_input(raw: str) -> ParsedInput:
     if os_match:
         return ParsedInput(
             raw_input=text,
-            arxiv_id=_normalize_old_style(os_match.group(1), os_match.group(2), os_match.group(3), os_match.group(4)),
+            arxiv_id=_normalize_old_style(
+                os_match.group(1),
+                os_match.group(2),
+                os_match.group(3),
+                os_match.group(4),
+            ),
             version=int(os_match.group(5)) if os_match.group(5) else None,
             input_type="id",
         )

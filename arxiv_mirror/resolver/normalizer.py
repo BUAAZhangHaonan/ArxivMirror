@@ -9,17 +9,16 @@ import unicodedata
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db.crud import (
+    create_resolver_audit,
     find_paper_by_normalized_title,
     get_latest_version,
     get_paper,
     get_paper_by_doi,
     search_papers_by_title_trgm,
 )
-from ..db.crud import create_resolver_audit
 from ..models.db import ArxivPaper, PaperVersion
 from ..models.enums import ResolverState
 from ..models.schemas import ParsedInput, ResolvedPaper, ResolveResponse
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -48,7 +47,7 @@ def normalize_arxiv_id(raw_id: str) -> str:
     m = _OLD_STYLE_PREFIX_RE.match(s)
     if m:
         # Remove the prefix, leaving YYMMNNN
-        digits = s[m.end():]
+        digits = s[m.end() :]
         if len(digits) == 7 and digits.isdigit():
             yy = digits[:2]
             mm = digits[2:4]
@@ -101,6 +100,7 @@ def _build_resolved_paper(
 # Main resolver
 # ---------------------------------------------------------------------------
 
+
 async def resolve(
     session: AsyncSession,
     parsed: ParsedInput,
@@ -110,7 +110,7 @@ async def resolve(
     Strategy order:
       1. arxiv_id  -> direct DB lookup by primary key
       2. doi       -> DB lookup by DOI column
-      3. title_hint -> exact normalized_title match, then trigram fallback
+      3. title_hint -> exact normalized_title match, then trigram similarity
     """
     t0 = time.monotonic()
     strategy: str | None = None
@@ -129,6 +129,7 @@ async def resolve(
                     ver = await get_latest_version(session, base_id)
                     if ver is not None and parsed.version <= ver.version:
                         from ..db.crud import get_version
+
                         ver = await get_version(session, base_id, parsed.version)
                 else:
                     ver = await get_latest_version(session, base_id)
@@ -188,10 +189,12 @@ async def resolve(
                         result=_build_resolved_paper(paper, ver),
                     )
 
-            # Trigram similarity fallback
+            # Trigram similarity lookup
             strategy = "title_trgm"
             candidates = await search_papers_by_title_trgm(
-                session, parsed.title_hint, limit=5,
+                session,
+                parsed.title_hint,
+                limit=5,
             )
 
             if not candidates:

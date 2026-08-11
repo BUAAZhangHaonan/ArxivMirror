@@ -1,148 +1,126 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
+import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import aiohttp
 
-from ..config import get_settings
+from ..config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+class PdfDownloadError(RuntimeError):
+    """Raised when one explicit arXiv PDF download cannot complete."""
+
+
+@dataclass(frozen=True)
 class DownloadResult:
-    success: bool
-    local_path: Path | None = None
-    sha256: str | None = None
-    file_size: int | None = None
-    error: str | None = None
+    local_path: Path
+    file_size: int
 
 
 class PdfDownloader:
-    def __init__(self) -> None:
-        self._last_request_time: float = 0.0
+    def __init__(self, settings: Settings | None = None) -> None:
+        self._settings = settings or get_settings()
+        self._last_request_time = 0.0
+        self._rate_lock = asyncio.Lock()
         self._session: aiohttp.ClientSession | None = None
-        self._lock = asyncio.Lock()
 
     def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            settings = get_settings()
-            timeout = aiohttp.ClientTimeout(total=settings.pdf_download_timeout)
-            self._session = aiohttp.ClientSession(
-                timeout=timeout,
-                trust_env=False,
-            )
+            timeout = aiohttp.ClientTimeout(total=self._settings.pdf_download_timeout)
+            self._session = aiohttp.ClientSession(timeout=timeout, trust_env=False)
         return self._session
 
-    async def _enforce_rate_limit(self) -> None:
-        """Enforce global 3s gap between requests, sleeping *outside* the lock.
-
-        The lock is held only for the scheduling math (microseconds), so
-        multiple concurrent consumers can reserve their time slots without
-        blocking each other.
-        """
-        settings = get_settings()
-        delay = settings.arxiv_download_delay_seconds
-        wait_time = 0.0
-        async with self._lock:
+    async def _wait_for_request_slot(self) -> None:
+        async with self._rate_lock:
             now = time.monotonic()
-            next_slot = self._last_request_time + delay
-            if now < next_slot:
-                wait_time = next_slot - now
-                self._last_request_time = next_slot
-            else:
-                self._last_request_time = now
-        if wait_time > 0:
-            await asyncio.sleep(wait_time)
+            wait_time = max(
+                0.0,
+                self._last_request_time
+                + self._settings.arxiv_download_delay_seconds
+                - now,
+            )
+            if wait_time:
+                await asyncio.sleep(wait_time)
+            self._last_request_time = time.monotonic()
 
-    async def download(self, versioned_id: str, dest_path: Path) -> DownloadResult:
-        settings = get_settings()
+    async def download(self, versioned_id: str, destination: Path) -> DownloadResult:
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        destination.parent.chmod(0o700)
+        temporary = destination.with_suffix(".pdf.tmp")
+        if destination.exists() or temporary.exists():
+            raise PdfDownloadError(f"PDF path is not empty for {versioned_id}")
+
+        await self._wait_for_request_slot()
+        proxy = self._settings.https_proxy or self._settings.http_proxy or None
         url = f"https://arxiv.org/pdf/{versioned_id}.pdf"
 
-        last_error: str | None = None
-        for attempt in range(1, settings.pdf_download_max_retries + 1):
-            try:
-                await self._enforce_rate_limit()
-                result = await self._do_download(url, dest_path, settings)
-                if result.success:
-                    return result
-                last_error = result.error
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                last_error = str(exc)
-                logger.warning(
-                    "Download attempt %d/%d failed for %s: %s",
-                    attempt,
-                    settings.pdf_download_max_retries,
-                    versioned_id,
-                    exc,
-                )
+        try:
+            session = self._get_session()
+            async with session.get(url, proxy=proxy) as response:
+                if response.status != 200:
+                    raise PdfDownloadError(
+                        f"arXiv returned HTTP {response.status} for {versioned_id}"
+                    )
+                if (
+                    response.content_length is not None
+                    and response.content_length > self._settings.pdf_max_file_size
+                ):
+                    raise PdfDownloadError(f"PDF is too large for {versioned_id}")
 
-            if attempt < settings.pdf_download_max_retries:
-                backoff = min(2**attempt, 30)
-                await asyncio.sleep(backoff)
+                file_size = await self._write_response(response, temporary)
 
-        return DownloadResult(success=False, error=last_error)
+            temporary.replace(destination)
+            destination.chmod(0o600)
+            return DownloadResult(local_path=destination, file_size=file_size)
+        except asyncio.CancelledError:
+            self._remove_created_files(temporary, destination)
+            raise
+        except PdfDownloadError:
+            self._remove_created_files(temporary, destination)
+            raise
+        except Exception as exc:
+            self._remove_created_files(temporary, destination)
+            logger.warning("PDF download failed for %s: %s", versioned_id, exc)
+            raise PdfDownloadError(f"PDF download failed for {versioned_id}") from exc
 
-    async def _do_download(
-        self, url: str, dest_path: Path, settings
-    ) -> DownloadResult:
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
+    async def _write_response(
+        self,
+        response: aiohttp.ClientResponse,
+        temporary: Path,
+    ) -> int:
+        file_size = 0
+        prefix = bytearray()
+        with temporary.open("xb") as output:
+            temporary.chmod(0o600)
+            async for chunk in response.content.iter_chunked(64 * 1024):
+                if not chunk:
+                    continue
+                file_size += len(chunk)
+                if file_size > self._settings.pdf_max_file_size:
+                    raise PdfDownloadError("PDF exceeded the configured size limit")
+                if len(prefix) < 5:
+                    prefix.extend(chunk[: 5 - len(prefix)])
+                output.write(chunk)
+            output.flush()
+            os.fsync(output.fileno())
 
-        proxy = settings.https_proxy or settings.http_proxy or None
+        if file_size == 0 or bytes(prefix) != b"%PDF-":
+            raise PdfDownloadError("arXiv response is not a PDF")
+        return file_size
 
-        session = self._get_session()
-        async with session.get(url, proxy=proxy) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                return DownloadResult(
-                    success=False,
-                    error=f"HTTP {resp.status}: {text[:500]}",
-                )
-
-            content_length = resp.content_length
-            if content_length is not None and content_length > settings.pdf_max_file_size:
-                return DownloadResult(
-                    success=False,
-                    error=f"Content-Length {content_length} exceeds max {settings.pdf_max_file_size}",
-                )
-
-            sha256 = hashlib.sha256()
-            total_bytes = 0
-            tmp_path = dest_path.with_suffix(".pdf.tmp")
-
-            try:
-                with open(tmp_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(64 * 1024):
-                        total_bytes += len(chunk)
-                        if total_bytes > settings.pdf_max_file_size:
-                            return DownloadResult(
-                                success=False,
-                                error=f"File exceeded max size {settings.pdf_max_file_size} during download",
-                            )
-                        sha256.update(chunk)
-                        f.write(chunk)
-
-                tmp_path.replace(dest_path)
-            except Exception:
-                if tmp_path.exists():
-                    tmp_path.unlink()
-                raise
-
-            return DownloadResult(
-                success=True,
-                local_path=dest_path,
-                sha256=sha256.hexdigest(),
-                file_size=total_bytes,
-            )
+    @staticmethod
+    def _remove_created_files(temporary: Path, destination: Path) -> None:
+        temporary.unlink(missing_ok=True)
+        destination.unlink(missing_ok=True)
 
     async def close(self) -> None:
-        if self._session and not self._session.closed:
+        if self._session is not None and not self._session.closed:
             await self._session.close()
             self._session = None

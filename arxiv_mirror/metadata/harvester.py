@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import logging
 import unicodedata
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
-from ..config import get_settings
 from ..db.crud import get_sync_state, upsert_paper, upsert_sync_state, upsert_version
 from .oaipmh_client import OaiPmhClient
 
@@ -17,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 async def run_harvest(engine: AsyncEngine) -> None:
     """Main harvest loop. Checks sync_state, runs incremental or full harvest."""
-    settings = get_settings()
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async with session_factory() as session:
@@ -36,7 +34,7 @@ async def run_harvest(engine: AsyncEngine) -> None:
         # Check for stale running state (> 1 hour)
         if sync.status == "running":
             if sync.updated_at is not None:
-                elapsed = datetime.now(timezone.utc) - sync.updated_at
+                elapsed = datetime.now(UTC) - sync.updated_at
                 if elapsed < timedelta(hours=1):
                     logger.warning(
                         "Harvest already running (updated %s ago). Skipping.",
@@ -56,7 +54,7 @@ async def run_harvest(engine: AsyncEngine) -> None:
             session,
             name="oaipmh",
             status="running",
-            updated_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(UTC),
         )
         await session.commit()
 
@@ -111,13 +109,17 @@ async def run_harvest(engine: AsyncEngine) -> None:
                     if rec.get("oai_datestamp") is not None:
                         paper_kwargs["oai_datestamp"] = rec["oai_datestamp"]
                     paper_kwargs["source"] = "oaipmh"
-                    paper_kwargs["updated_at"] = datetime.now(timezone.utc)
+                    paper_kwargs["updated_at"] = datetime.now(UTC)
 
                     # Version info from OAI metadata
                     versions = rec.get("versions", [])
                     if versions:
-                        latest_ver = max(versions, key=lambda v: v.get("version_number", 1))
-                        paper_kwargs["latest_version"] = latest_ver.get("version_number", 1)
+                        latest_ver = max(
+                            versions, key=lambda v: v.get("version_number", 1)
+                        )
+                        paper_kwargs["latest_version"] = latest_ver.get(
+                            "version_number", 1
+                        )
 
                         # Extract first and latest version dates
                         version_dates = [
@@ -138,7 +140,7 @@ async def run_harvest(engine: AsyncEngine) -> None:
                         ver_num = ver.get("version_number", 1)
                         ver_kwargs: dict = {
                             "versioned_id": f"{rec['id']}v{ver_num}",
-                            "updated_at": datetime.now(timezone.utc),
+                            "updated_at": datetime.now(UTC),
                         }
                         if ver.get("date"):
                             ver_kwargs["version_date"] = ver["date"]
@@ -161,7 +163,7 @@ async def run_harvest(engine: AsyncEngine) -> None:
                     records_harvested=(sync.records_harvested or 0) + len(records)
                     if sync
                     else total_harvested,
-                    updated_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(UTC),
                 )
                 await session.commit()
 
@@ -180,23 +182,23 @@ async def run_harvest(engine: AsyncEngine) -> None:
                 session,
                 name="oaipmh",
                 status="idle",
-                last_response_date=datetime.now(timezone.utc),
-                last_success_at=datetime.now(timezone.utc),
-                updated_at=datetime.now(timezone.utc),
+                last_response_date=datetime.now(UTC),
+                last_success_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
             )
             await session.commit()
 
         logger.info("Harvest complete. Total records: %d", total_harvested)
 
     except Exception as e:
-        logger.exception("Harvest failed: %s", e)
+        logger.exception("Harvest failed")
         async with session_factory() as session:
             await upsert_sync_state(
                 session,
                 name="oaipmh",
                 status="error",
                 error_message=str(e)[:2000],
-                updated_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(UTC),
             )
             await session.commit()
         raise

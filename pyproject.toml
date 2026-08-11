@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "arxiv-mirror"
 version = "0.1.0"
-description = "High-performance arXiv paper PDF download, mirror, and parsing system"
+description = "arXiv metadata resolution and on-request PDF storage service"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
@@ -16,12 +16,11 @@ dependencies = [
     "pydantic>=2.10.0",
     "pydantic-settings>=2.7.0",
     "aiohttp>=3.11.0",
-    "uvloop>=0.21.0",
+    "uvloop>=0.21.0; sys_platform != 'win32'",
     "httpx>=0.28.0",
     "aiofiles>=24.1.0",
     "lxml>=5.3.0",
     "orjson>=3.10.0",
-    "aiobotocore>=2.15.0",
 ]
 
 [project.optional-dependencies]
@@ -29,13 +28,12 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.25.0",
     "httpx>=0.28.0",
+    "ruff==0.16.2",
 ]
 
 [project.scripts]
 arxiv-mirror-api = "arxiv_mirror.main:run_api"
 arxiv-mirror-harvest = "arxiv_mirror.main:run_harvest"
-arxiv-mirror-download-worker = "arxiv_mirror.main:run_download_worker"
-arxiv-mirror-parser-worker = "arxiv_mirror.main:run_parser_worker"
 
 [tool.setuptools.packages.find]
 include = ["arxiv_mirror*"]
